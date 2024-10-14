@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  FTD DbAppend serverless application. This template includes all the resources that need to be deployed
+  in order for this app to work within the AWS ecosystem.
+
+Parameters:
+  NetworkStackName:
+    Type: String
+
+Resources:
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaInvokePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeAsync
+                  - lambda:InvokeFunction
+                Resource:
+                  - "*"
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+        - PolicyName: AccessS3
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - !GetAtt S3BucketSECFTD.Arn
+
+  S3BucketSECFTD:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketName: !Join
+        - "-"
+        - - "bucket-sec-ftd"
+          - !Select
+            - 0
+            - !Split
+              - "-"
+              - !Select
+                - 2
+                - !Split
+                  - "/"
+                  - !Ref "AWS::StackId"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ToGlacierAfter60Days
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 60
+
+  resource:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dbAppend.ftd_handler
+      Runtime: python3.8
+      CodeUri: .
+      MemorySize: 512
+      Timeout: 300
+      Description: |-
+        SEC FTD dbAppend Lambda function. Invoked by SEC FTD lambda S3 event, 
+        processes data and upserts it into an RDS database.
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "${NetworkStackName}-LambdaSecurityGroup"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnet1"
+          - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnet2"
+          - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnet3"
+          - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnet4"
+          - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnet5"
+      Environment:
+        Variables:
+          MAIN_DB: SecretMainDbCredentials
+
+          REGION: !Ref AWS::Region
+      Policies:
+        - AmazonRDSFullAccess
+        - AWSLambdaBasicExecutionRole
+        - AWSLambda_FullAccess
+        - AmazonS3FullAccess
+        - AWSLambdaVPCAccessExecutionRole
+        - SecretsManagerReadWrite
+      Events:
+        FileUploadEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref S3BucketSECFTD
+            Events: s3:ObjectCreated:*
+
+Outputs:
+  resource:
+    Value: !Ref resource
+    Export:
+      Name: !Sub "${AWS::StackName}-resource"
+
+  S3BucketSECFTD:
+    Value: !Ref S3BucketSECFTD
+    Export:
+      Name: !Sub "${AWS::StackName}-S3BucketSECFTD"
+
+  SECFTDResourceLambdaArn:
+    Value: !GetAtt resource.Arn
+    Export:
+      Name: SECFTDResourceLambdaArn
+
