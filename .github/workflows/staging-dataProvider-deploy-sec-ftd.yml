@@ -1,0 +1,88 @@
+name: "[staging][DATA-PROVIDER][deploy][SEC] FTD"
+
+on:
+  push:
+    branches:
+      - staging
+    paths:
+      - "data-provider/SEC/FTD/dbAppend/**"
+
+jobs:
+  changedFiles:
+    runs-on: ubuntu-latest
+    environment: staging
+    outputs:
+      files: ${{ steps.listChangedFiles.outputs.all_changed_files }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: List changed files
+        id: listChangedFiles
+        uses: tj-actions/changed-files@v35.9.2
+
+      - name: Print changed files
+        run: echo "${{ steps.listChangedFiles.outputs.all_changed_files }}"
+
+  dataProvider-SEC-FTD-dbAppend-CloudFormationJob:
+    runs-on: ubuntu-latest
+    environment: staging
+    needs: changedFiles
+    env:
+      STACK_NAME_dbAppend: stack-dataProvider-sec-ftd-dbAppend
+      LayerPandas_NAME: LayerPandas
+      LayerDbConnect_NAME: LayerDbConnect
+      LayerDbModel_NAME: LayerDbModel
+      LayerAioBoto3_NAME: LayerAioBoto3
+      SAM_S3_BUCKET: ${{ secrets.SAM_S3_BUCKET }}
+      VPC_STACK_NAME: ${{ secrets.VPC_STACK_NAME }}
+
+    if: ${{ contains(needs.changedFiles.outputs.files, 'data-provider/SEC/FTD/dbAppend') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Deploy CloudFormation stack
+        run: |
+          chmod u+x data-provider/SEC/FTD/dbAppend/deploy.sh
+          data-provider/SEC/FTD/dbAppend/deploy.sh
+
+      - name: Wait 10 Seconds
+        run: sleep 10s
+
+      - name: Update Function Configuration
+        run: |
+          chmod u+x data-provider/SEC/FTD/dbAppend/update_layers.sh 
+          data-provider/SEC/FTD/dbAppend/update_layers.sh
+
+      - name: Wait 10 seconds for previous stack to be ready
+        run: sleep 10s
+
+      - name: Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          fields: workflow,pullRequest,job,commit,repo,ref,author,took,message
+          custom_payload: |
+            {
+              attachments: [{
+                color: '${{ job.status }}' === 'success' ? 'good' : '${{ job.status }}' === 'failure' ? 'danger' : 'warning',
+                text: `${process.env.AS_WORKFLOW}\n${process.env.AS_JOB} (${process.env.AS_COMMIT}) of ${process.env.AS_REPO}@${process.env.AS_REF} by ${process.env.AS_AUTHOR} ${{ job.status }} in ${process.env.AS_TOOK}\n\n${process.env.AS_MESSAGE}`,
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+        if: always() # Pick up events even if the job fails or is canceled.
+      
